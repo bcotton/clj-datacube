@@ -110,37 +110,39 @@
   ([cube]
      (assoc cube :rollups (conj (:rollups cube) (Rollup. #{})))))
 
+(defn- dim [cube name]
+  (get (:dimensions cube) name))
 
 (defn write-builder [cube dims-and-values]
   (let [builder (WriteBuilder. (:cube cube))]
-    (doseq [[k v] dims-and-values]
-      (.at builder k v))
+    (doseq [[dim-name _ coordinate] dims-and-values]
+      (.at builder (dim cube dim-name) coordinate))
     builder))
 
 (defn read-builder [cube dims-and-values]
   (let [builder (ReadBuilder. (:cube cube))]
-    (doseq [[k v] dims-and-values]
-      (.at builder k v))
+    (doseq [[dim-name bucket-type coordinate] dims-and-values]
+      (.at builder (dim cube dim-name) bucket-type coordinate))
     builder))
 
-(defn- dim [cube name]
-  (get (:dimensions cube) name))
+(defn at 
+  ([dim coordinate] (at dim BucketType/IDENTITY coordinate))
+  ([dim ^BucketType bucket-type coordinate] [dim bucket-type coordinate]))
 
-(defn write-io [io value builder]
+(defn- write-io [io value builder]
   (.writeSync io (LongOp. value) builder))
 
-(defn get-io [io builder]
+(defn- get-io [io builder]
   (let [value (.get io builder)]
-      (when (.isPresent value)
-        (-> (.get value) .getLong))))
+      (if (.isPresent value)
+        (-> (.get value) .getLong)
+        0)))
 
-(defn write-value [cube value & {:as dims}]
-  (let [dims-and-values (reduce (fn [acc [k v]] (assoc acc (dim cube k) v)) {} dims)]
-    (write-io (:cubeio cube) value (write-builder cube dims-and-values))))
+(defn write-value [cube value & dims-and-values]
+  (write-io (:cubeio cube) value (write-builder cube dims-and-values)))
 
-(defn read-value [cube & {:as dims}]
-  (let [dims-and-values (reduce (fn [acc [k v]] (assoc acc (dim cube k) v)) {} dims)] 
-    (get-io (:cubeio cube) (read-builder cube dims-and-values))))
+(defn read-value [cube & dims-and-values]
+  (get-io (:cubeio cube) (read-builder cube dims-and-values)))
 
 (defmacro defcube 
   [cube-name measure-type db-harness batch-size flush-interval sync-level & body]
