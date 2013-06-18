@@ -4,6 +4,7 @@
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[org.clojure/clojure "1.4.0"]
+                 [clj-time                                               "0.4.4"]
                  [com.urbanairship/datacube "1.2.4-SNAPSHOT" :classifier "hbase0.94.2-cdh4.2.0-hadoopCore2.0.0-mr1-cdh4.2.0-hadoop2.0.0-cdh4.2.0"]
                  [org.apache.hadoop/hadoop-core                          "2.0.0-mr1-cdh4.2.0"]
                  [org.apache.hadoop/hadoop-common                        "2.0.0-cdh4.2.0"]

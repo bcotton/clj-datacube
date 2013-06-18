@@ -16,16 +16,22 @@
 (def batch-sync SyncLevel/BATCH_SYNC)
 (def batch-async SyncLevel/BATCH_ASYNC)
 
-(defn map-id-service [] 
-  (CachingIdService. 5 (MapIdService.) "cache"))
+(defn map-id-service 
+  ([]
+     (map-id-service "cache" 10))
+  ([name size] 
+     (CachingIdService. size (MapIdService.) name)))
 
-(defn map-db-harness []
-  (MapDbHarness. (ConcurrentHashMap.) 
-                 LongOp/DESERIALIZER read-combine-cas (map-id-service)))
+(defn map-db-harness 
+  ([commit-type]
+     (MapDbHarness. (ConcurrentHashMap.) 
+                    LongOp/DESERIALIZER commit-type (map-id-service)))
+  ([]
+     (map-db-harness read-combine-cas)))
 
-(defn hbase-configuration []
+(defn hbase-configuration [zookeeper-connect]
   (doto (HBaseConfiguration/create) 
-    (.set "hbase.zookeeper.quorum" "bld-hadoop-06")))
+    (.set "hbase.zookeeper.quorum" zookeeper-connect)))
 
 (defn hbase-id-service []
   (CachingIdService. 500 (HBaseIdService.
@@ -55,7 +61,7 @@
      (Dimension. name (StringToBytesBucketer.) true size)))
 
 (defn time-dimension 
-  "Create a dimension that buckers the Hour, Day and Month"
+  "Create a dimension that buckets Years, Months, Weeks Days and Hours."
   ([name]
      (time-dimension name 8))
   ([name size]
@@ -105,46 +111,44 @@
      (assoc cube :rollups (conj (:rollups cube) (Rollup. #{})))))
 
 
-;; (defmacro write-builder [cube method & ats]
-;;   (list* 'doto `(new WriteBuilder  ~cube)
-;;     (for [args (filter #(not (empty? %)) ats)]
-;;       `(~method ~@args))))
+(defn write-builder [cube dims-and-values]
+  (let [builder (WriteBuilder. (:cube cube))]
+    (doseq [[k v] dims-and-values]
+      (.at builder k v))
+    builder))
 
-;; (defmacro read-builder [cube method & ats]
-;;   (list* 'doto `(new ReadBuilder  ~cube)
-;;     (for [args (filter #(not (empty? %)) ats)]
-;;       `(~method ~@args))))
+(defn read-builder [cube dims-and-values]
+  (let [builder (ReadBuilder. (:cube cube))]
+    (doseq [[k v] dims-and-values]
+      (.at builder k v))
+    builder))
 
-;; (defn write-io [io value builder]
-;;   (.writeSync io (LongOp. value) builder))
+(defn- dim [cube name]
+  (get (:dimensions cube) name))
 
-;; (defn get-io [io builder]
-;;   (let [value (.get io builder)]
-;;       (when (.isPresent value)
-;;         (-> (.get value) .getLong))))
+(defn write-io [io value builder]
+  (.writeSync io (LongOp. value) builder))
 
-;; (defprotocol Cube
-;;   (write-value [cube value & dims])
-;;   (read-value [cube & dims]))
+(defn get-io [io builder]
+  (let [value (.get io builder)]
+      (when (.isPresent value)
+        (-> (.get value) .getLong))))
 
-;; (defrecord CljDataCube [dimensions dimension-list rollups cube cubeio]
-;;   Cube
-;; (defn write-value [cube value builder]
-;;              (let [dimensions (:dimensions cube)
-;;                    dims-and-values (map #((vector (get dimensions (first %))) (last %)) 
-;;                                         (partition 2 dims))] 
-;;                (write-io (:cubeio cube) value (io-builder WriteBuilder (:cube cube) .at [dims-and-values]))))
-;; (defn read-value [cube & dims]
-;;   (let [dimensions (:dimensions cube)
-;;         dims-and-values (map #((vector (get dimensions (first %))) (last %)) 
-;;                                         (partition 2 dims))] 
-;;     (get-io (:cubeio cube) (io-builder ReadBuilder (:cube cube) .at [dims-and-values]))))
+(defn write-value [cube value & {:as dims}]
+  (let [dims-and-values (reduce (fn [acc [k v]] (assoc acc (dim cube k) v)) {} dims)]
+    (write-io (:cubeio cube) value (write-builder cube dims-and-values))))
+
+(defn read-value [cube & {:as dims}]
+  (let [dims-and-values (reduce (fn [acc [k v]] (assoc acc (dim cube k) v)) {} dims)] 
+    (get-io (:cubeio cube) (read-builder cube dims-and-values))))
 
 (defmacro defcube 
   [cube-name measure-type db-harness batch-size flush-interval sync-level & body]
   `(let [clj-cube# (-> {}
                        ~@body)
-         cube# (DataCube. (vals (:dimensions clj-cube#)) (:rollups clj-cube#))
+         cube# (DataCube. (for [dim# (:dimension-list clj-cube#)]
+                            (dim# (:dimensions clj-cube#)))
+                          (:rollups clj-cube#))
          cubeio# (DataCubeIo. cube# ~db-harness ~batch-size ~flush-interval ~sync-level)
          cube2# (-> clj-cube#
                    (assoc :cube cube#)
