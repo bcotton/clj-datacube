@@ -35,7 +35,7 @@ Bug reports and pull requests at [the official clj-datacube repo on Github](http
 ## Usage
 
 ``` clj
-(import 'clj-datacube)
+(use 'clj-datacube.core)
 ```
 
 ### Defining a cube
