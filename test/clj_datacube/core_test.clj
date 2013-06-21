@@ -12,9 +12,9 @@
     (dimension :time (time-dimension "time" 8))
 
     (rollup)
-    (rollup [:name])
-    (rollup [:name :time day-bucket])
-    (rollup [:name :measure]))
+    (rollup :name)
+    (rollup :name :time day-bucket)
+    (rollup :name :measure))
 
   (write-value my-cube 102)
   (write-value my-cube 100 (at :name "name"))
@@ -61,15 +61,6 @@
 (facts "cube rollups on missing dimensions"
   (defcube broken :long (map-db-harness long-deserializer) 10 1000 full-sync-level
     (dimension :name (string-dimension "name"))
-    (rollup [:unknown]))  
+    (rollup :unknown))  
   => (throws IllegalArgumentException #"Dimension :unknown not found")
 )
-
-
-
-
-
-
-
-
-

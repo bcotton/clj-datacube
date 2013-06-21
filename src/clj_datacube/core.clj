@@ -1,13 +1,15 @@
 (ns clj-datacube.core
   (:import [java.util.concurrent ConcurrentHashMap]
            [com.urbanairship.datacube Dimension DimensionAndBucketType BucketType Rollup DataCube DataCubeIo SyncLevel DbHarness DbHarness$CommitType WriteBuilder ReadBuilder]
-           [com.urbanairship.datacube.bucketers StringToBytesBucketer HourDayMonthBucketer BigEndianIntBucketer BigEndianLongBucketer BooleanBucketer]
+           [com.urbanairship.datacube.bucketers StringToBytesBucketer HourDayMonthBucketer BigEndianIntBucketer BigEndianLongBucketer BooleanBucketer MinutePeriodBucketer SecondPeriodBucketer]
            [com.urbanairship.datacube.idservices HBaseIdService MapIdService CachingIdService]
            [com.urbanairship.datacube.dbharnesses MapDbHarness HBaseDbHarness]
            [com.urbanairship.datacube.ops LongOp IntOp DoubleOp]
            [org.apache.hadoop.hbase HBaseConfiguration]
            [org.apache.hadoop.hbase.client HTablePool])
-  (:use [clojure.string :only [join]]))
+  (:require [clj-time.core :as time])
+  (:use [clojure.string :only [join]])
+  (:gen-class))
 
 (def read-combine-cas DbHarness$CommitType/READ_COMBINE_CAS)
 
@@ -36,9 +38,9 @@
   (doto (HBaseConfiguration/create) 
     (.set "hbase.zookeeper.quorum" zookeeper-connect)))
 
-(defn hbase-id-service []
+(defn hbase-id-service [zookeeper-connect]
   (CachingIdService. 500 (HBaseIdService.
-                           (hbase-configuration)
+                           (hbase-configuration zookeeper-connect)
                            (.getBytes "idlookup")
                            (.getBytes "idcounter")
                            (.getBytes "c")
@@ -46,27 +48,29 @@
                      "cache"))
 
 (defn hbase-db-harness 
-  ([commit-type deserializer]
+  ([commit-type deserializer zookeeper-connect]
      (println "Creating HBase DB Harness")
      (HBaseDbHarness. 
-      (HTablePool. (hbase-configuration) 10) 
+      (HTablePool. (hbase-configuration zookeeper-connect) 10) 
       (.getBytes "spans")
       (.getBytes "spans") 
       (.getBytes "spans") 
       deserializer 
-      (hbase-id-service) 
+      (hbase-id-service zookeeper-connect) 
       commit-type))
-  ([deserializer]
-     (hbase-db-harness read-combine-cas deserializer)))
+  ([deserializer zookeeper-connect]
+     (hbase-db-harness read-combine-cas deserializer zookeeper-connect)))
 
 
 ;;
 ;; Dimensions
 ;;
+
+;; (def string-dimension-2 [cube key] (dimension cube key (string-dimension (name key))) )
 (defn string-dimension 
   "Create a dimension suitable for storing String values."
   ([name]
-     (string-dimension name 4))
+     (string-dimension name 5))
   ([name size]
      (Dimension. name (StringToBytesBucketer.) true size)))
 
@@ -100,7 +104,10 @@
   ([dim bucket-type] 
      (DimensionAndBucketType. dim bucket-type))
   ([dim]
-     (dim-and-bucket dim BucketType/IDENTITY)))
+     (make-dim-and-bucket dim BucketType/IDENTITY)))
+
+(defn- dim [cube name]
+  (get (:dimensions cube) name))
 
 (defn- parse-rollup-spec [cube rollup-spec]
   (let [dimensions (:dimensions cube)] 
@@ -118,9 +125,6 @@
          :default (recur (rest spec) (conj dims-and-buckets
                                         (make-dim-and-bucket dimension))))))))
 
-(defn- dim [cube name]
-  (get (:dimensions cube) name))
-
 ;;
 ;; Cube DSL
 ;; 
@@ -131,8 +135,8 @@
       (assoc :dimension-list  (conj (get cube :dimension-list []) key))))
 
 (defn rollup 
-  ([cube dims] 
-     (let [r (Rollup. (parse-rollup-spec cube dims))] 
+  ([cube & spec] 
+     (let [r (Rollup. (parse-rollup-spec cube spec))] 
        (assoc cube :rollups (conj (:rollups cube) r))))
   ([cube]
      (assoc cube :rollups (conj (:rollups cube) (Rollup. #{})))))
@@ -200,3 +204,36 @@
                    (assoc :sync-level ~sync-level)
                    (assoc :measure-type ~measure-type))]
      (def ~(symbol cube-name) cube#)))
+
+
+
+(defn -main []
+   (defcube alm-cube 
+     :long (hbase-db-harness long-deserializer "bld-hadoop-06")
+     10 1000 full-sync-level
+
+     (dimension :host (string-dimension "host"))
+     (dimension :measure (string-dimension "measure"))
+     (dimension :five-minute (Dimension. "minute" (MinutePeriodBucketer. 5) false 8))
+     (dimension :five-second (Dimension. "second" (SecondPeriodBucketer. 5) false 8))
+     (rollup :measure :host)
+     (rollup :measure :host :five-minute)
+     (rollup :measure :host :five-second))
+   
+   (println (read-value alm-cube 
+                (at :host "qs-app-01.rally.prod") 
+                (at :measure "javaRequestSpan.heapAllocated"))))
+
+
+(comment
+
+(defn foo [& args]
+  (let [aps (partition-all 2 args)
+        [opts-and-vals ps] (split-with #(keyword? (first %)) aps)
+        options (into {} (map vec opts-and-vals))
+        positionals (reduce into [] ps)]
+    [options positionals]))
+
+)
+
+
