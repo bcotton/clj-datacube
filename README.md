@@ -37,8 +37,22 @@ Bug reports and pull requests at [the official clj-datacube repo on Github](http
 ### Defining a cube
 
 ``` clj
-(defcube tweet-cube :long (map-db-harness long-deserializer) 10 1000 full-sync-level
-  (dimension 
+  (defcube my-cube :long (map-db-harness long-deserializer) 10 1000 full-sync-level
+
+    (dimension :name (string-dimension "name"))
+    (dimension :measure (string-dimension "measure"))
+    (dimension :time (time-dimension "time" 8))
+
+    (rollup)
+    (rollup :name)
+    (rollup :name :time day-bucket)
+    (rollup :name :measure))
+
+  (write-value my-cube 102)
+  (write-value my-cube 100 (at :name "name"))
+  (write-value my-cube 100 (at :name "name"))
+  (write-value my-cube 104 (at :name "other name") (at :measure "testing"))
+  (write-value my-cube 105 (at :name "name2") (at :time (time/date-time 2013 06 02)))
 ```
   
 
@@ -46,4 +60,4 @@ Bug reports and pull requests at [the official clj-datacube repo on Github](http
 
 Copyright © 2013 Bob Cotton
 
-Distributed under the Eclipse Public License, the same as Clojure.
+Distributed under the MIT License
