@@ -4,14 +4,18 @@ A Clojure wrapper around Urban Airship's DataCube.
 
 ## Artifacts
 
-`clj-datacube` is release to clojars.
+For now, you should download and build it.
+
+```sh
+lein package
+```
 
 ## Most Recent
 
 With leiningen:
 
 ``` clj
-  [clj-datacube 1.0.0]
+  [clj-datacube 0.1.0-SNAPSHOT]
 ```
   
 With maven:
@@ -20,7 +24,7 @@ With maven:
   <dependency>
     <groupId>clj-datacube</groupId>
     <artifactId>clj-datacube</artifactId>
-    <version>1.0.0</version>
+    <version>0.1.0-SNAPSHOT</version>
   </dependency>
 ```
 
