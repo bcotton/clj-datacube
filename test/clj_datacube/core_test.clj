@@ -5,11 +5,11 @@
   (:import [com.urbanairship.datacube Dimension Rollup]))
 
 (facts "first cube"
-  (defcube my-cube :long (map-db-harness long-deserializer) 10 1000 full-sync-level
+  (defcube my-cube :long
 
-    (dimension :name (string-dimension "name"))
-    (dimension :measure (string-dimension "measure"))
-    (dimension :time (time-dimension "time" 8))
+    (string-dimension :name)
+    (string-dimension :measure)
+    (time-dimension :time 8)
 
     (rollup)
     (rollup :name)
@@ -45,9 +45,9 @@
      ))
 
 (facts "Type checking stored values"
-  (defcube long-cube :long (map-db-harness long-deserializer) 10 1000 full-sync-level (rollup))
-  (defcube int-cube :int (map-db-harness int-deserializer) 10 1000 full-sync-level (rollup))
-  (defcube double-cube :double (map-db-harness double-deserializer) 10 1000 full-sync-level (rollup))
+  (defcube long-cube :long (rollup))
+  (defcube int-cube :int (rollup))
+  (defcube double-cube :double (rollup))
 
   (write-value long-cube 1000)
   (write-value int-cube 1000)
@@ -58,9 +58,26 @@
   (class (read-value double-cube)) => Double
   )
 
+(facts "Numeric and Boolean Dimensions"
+  (defcube long-cube :long 
+    (int-dimension :int)
+    (long-dimension :long)
+    (boolean-dimension :bool)
+    (rollup :int)
+    (rollup :int :long)
+    (rollup :int :long :bool))
+  (write-value long-cube 100 (at :int (int 1)))
+  (write-value long-cube 200 (at :int (int 2)) (at :long (long 2)))
+  (write-value long-cube 300 (at :int (int 3)) (at :long (long 2)) (at :bool true))
+
+  (read-value long-cube (at :int (int 1)))                                      => 100
+  (read-value long-cube (at :int (int 2)) (at :long (long 2)))                  => 200
+  (read-value long-cube (at :int (int 3)) (at :long (long 2)) (at :bool true))  => 300
+  (read-value long-cube (at :int (int 3)) (at :long (long 2)) (at :bool false)) => 0)
+
 (facts "cube rollups on missing dimensions"
-  (defcube broken :long (map-db-harness long-deserializer) 10 1000 full-sync-level
-    (dimension :name (string-dimension "name"))
+  (defcube broken :long
+    (string-dimension :name)
     (rollup :unknown))  
   => (throws IllegalArgumentException #"Dimension :unknown not found")
 )

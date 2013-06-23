@@ -1,10 +1,10 @@
 # clj-datacube
 
-A Clojure wrapper around Urban Airship's DataCube.
+A Clojure wrapper for [Urban Airship's DataCube](https://github.com/urbanairship/datacube).
 
 ## Artifacts
 
-For now, you should download and build it.
+For now, you should clone and build it.
 
 ```sh
 lein package

@@ -7,9 +7,12 @@
            [com.urbanairship.datacube.ops LongOp IntOp DoubleOp]
            [org.apache.hadoop.hbase HBaseConfiguration]
            [org.apache.hadoop.hbase.client HTablePool])
-  (:require [clj-time.core :as time])
+  (:require [clj-time.core :as time]
+            [clojure.pprint :as pprint])
   (:use [clojure.string :only [join]])
   (:gen-class))
+
+(declare dimension)
 
 (def read-combine-cas DbHarness$CommitType/READ_COMBINE_CAS)
 
@@ -20,6 +23,7 @@
 (def long-deserializer LongOp/DESERIALIZER)
 (def int-deserializer IntOp/DESERIALIZER)
 (def double-deserializer DoubleOp/DESERIALIZER)
+(def deserializers {:long long-deserializer :int int-deserializer :double double-deserializer})
 
 (defn map-id-service 
   ([]
@@ -65,21 +69,19 @@
 ;;
 ;; Dimensions
 ;;
-
-;; (def string-dimension-2 [cube key] (dimension cube key (string-dimension (name key))) )
-(defn string-dimension 
+(defn string-dimension
   "Create a dimension suitable for storing String values."
-  ([name]
-     (string-dimension name 5))
-  ([name size]
-     (Dimension. name (StringToBytesBucketer.) true size)))
+  ([cube key]
+     (string-dimension cube key 5))
+  ([cube key size]
+     (dimension cube key (Dimension. (name key) (StringToBytesBucketer.) true size))))
 
 (defn time-dimension 
   "Create a dimension that buckets Years, Months, Weeks Days and Hours."
-  ([name]
-     (time-dimension name 8))
-  ([name size]
-     (Dimension. name (HourDayMonthBucketer.) false size)))
+  ([cube key]
+     (time-dimension cube key 8))
+  ([cube key size]
+     (dimension cube key (Dimension. (name key) (HourDayMonthBucketer.) false size))))
 
 (def year-bucket HourDayMonthBucketer/years)
 (def month-bucket HourDayMonthBucketer/months)
@@ -89,15 +91,15 @@
 
 (defn int-dimension 
   "Create a dimension for by Integers"
-  [name] (Dimension. name (BigEndianIntBucketer.) false 8))
+  [cube key] (dimension cube key (Dimension. (name key) (BigEndianIntBucketer.) false 4)))
 
 (defn long-dimension 
   "Create a dimension for Longs"
-  [name] (Dimension. name (BigEndianLongBucketer.) false 8))
+  [cube key] (dimension cube key (Dimension. (name key) (BigEndianLongBucketer.) false 8)))
 
 (defn boolean-dimension
-  "Create a dimension for booleans"
-  [name] (Dimension. name (BooleanBucketer.) false 1))
+  "Create a dimension for Booleans"
+  [cube key] (dimension cube key (Dimension. (name key) (BooleanBucketer.) false 1)))
 
 ;; 
 (defn- make-dim-and-bucket 
@@ -126,7 +128,7 @@
                                         (make-dim-and-bucket dimension))))))))
 
 ;;
-;; Cube DSL
+;; Cube Creation DSL
 ;; 
 (defn dimension 
   [cube key dim]
@@ -156,84 +158,85 @@
       (.at builder (dim cube dim-name) bucket-type coordinate))
     builder))
 
-(defn at
-  "Sugar for wrapping dimension and buckets."
-  ([dim coordinate] (at dim BucketType/IDENTITY coordinate))
-  ([dim ^BucketType bucket-type coordinate] (vector dim bucket-type coordinate)))
-
-(defn- cube-op [cube value]
-  (let [measure-type (:measure-type cube)]
-    (case measure-type
-      :long (LongOp. value)
-      :int (IntOp. value)
-      :double (DoubleOp. value)
-      (throw (IllegalArgumentException. (str "Unknown measure type " measure-type))))))
+(defmulti cube-op (fn [cube _] (:measure-type cube)))
+(defmethod cube-op :long [cube value] (LongOp. value))
+(defmethod cube-op :int [cube value] (IntOp. value))
+(defmethod cube-op :double [cube value] (DoubleOp. value))
 
 (defn- write-io [cube value builder]
   (if (:sync-level cube full-sync-level)
     (.writeSync (:cubeio cube) (cube-op cube value) builder)    
     (.writeAsync (:cubeio cube) (cube-op cube value) builder)))
 
+(defmulti unwrap-value (fn [cube _] (:measure-type cube)))
+(defmethod unwrap-value :long [cube value] (.getLong (.get value)))
+(defmethod unwrap-value :int [cube value] (.getInt (.get value)))
+(defmethod unwrap-value :double [cube value] (.getDouble (.get value)))
+
 (defn- get-io [cube  builder]
   (let [value (.get (:cubeio cube) builder)
         measure-type (:measure-type cube)]
       (if (.isPresent value)
-        (case measure-type
-          :long (.getLong (.get value))
-          :int (.getInt (.get value))
-          :double (.getDouble (.get value)))
+        (unwrap-value cube value)
         0)))
 
-(defn write-value [cube value & dims-and-values]
+(defn at
+  "Sugar for wrapping dimension and buckets."
+  ([dim coordinate] (at dim BucketType/IDENTITY coordinate))
+  ([dim ^BucketType bucket-type coordinate] (vector dim bucket-type coordinate)))
+
+(defn write-value 
+  "Write the cube's value at a list of coordinates."
+  [cube value & dims-and-values]
   (write-io cube value (write-builder cube dims-and-values)))
 
-(defn read-value [cube & dims-and-values]
+(defn read-value 
+  "Read the cube's value at a list of coordinates."
+  [cube & dims-and-values]
   (get-io cube (read-builder cube dims-and-values)))
 
-(defmacro defcube 
-  [cube-name measure-type db-harness batch-size flush-interval sync-level & body]
-  `(let [cube# (-> {}
-                   ~@body)
-         data-cube# (DataCube. (for [dim# (:dimension-list cube#)] ;; Dimensions are ordered
-                                 (dim# (:dimensions cube#)))
-                               (:rollups cube#))
-         cubeio# (DataCubeIo. data-cube# ~db-harness ~batch-size ~flush-interval ~sync-level)
-         cube# (-> cube#
-                   (assoc :cube data-cube#)
-                   (assoc :cubeio cubeio#)
-                   (assoc :sync-level ~sync-level)
-                   (assoc :measure-type ~measure-type))]
-     (def ~(symbol cube-name) cube#)))
+(defn- extract-options [args]
+  (let [pairs (partition-all 2 args)
+        [options ps] (split-with #(keyword? (first %)) pairs)
+        options (into {} (map vec options))
+        body (reduce into [] ps)]
+    [options body]))
 
+(defmacro defcube
+  [cube-name measure-type & options-and-body]
+  (let [[options body] (extract-options options-and-body)
+        db-harness     (or (:db-harness options) 
+                           `(map-db-harness (~measure-type deserializers)))
+        batch-size     (get options :batch-size 0)
+        flush-interval (get options :flush-interval 1000)
+        sync-level     (get options :sync-level 'full-sync-level)]
+    `(let [cube# (-> {}
+                    ~@body)
+          data-cube# (DataCube. (for [dim# (:dimension-list cube#)] ;; Dimensions are ordered
+                                  (dim# (:dimensions cube#)))
+                                (:rollups cube#))
+          cubeio# (DataCubeIo. data-cube# ~db-harness ~batch-size ~flush-interval ~sync-level)
+          cube# (-> cube#
+                    (assoc :cube data-cube#)
+                    (assoc :cubeio cubeio#)
+                    (assoc :sync-level ~sync-level)
+                    (assoc :measure-type ~measure-type))]
+      (def ~(symbol cube-name) cube#))))
 
 
 (defn -main []
-   (defcube alm-cube 
-     :long (hbase-db-harness long-deserializer "bld-hadoop-06")
-     10 1000 full-sync-level
-
-     (dimension :host (string-dimension "host"))
-     (dimension :measure (string-dimension "measure"))
+  (defcube alm-cube :long
+     :db-harness (hbase-db-harness long-deserializer "bld-hadoop-06")
+     :batch-size 10 :flush-interval 1000 :sync-level full-sync-level
+     (string-dimension :host)
+     (string-dimension :measure)
      (dimension :five-minute (Dimension. "minute" (MinutePeriodBucketer. 5) false 8))
      (dimension :five-second (Dimension. "second" (SecondPeriodBucketer. 5) false 8))
      (rollup :measure :host)
      (rollup :measure :host :five-minute)
      (rollup :measure :host :five-second))
    
-   (println (read-value alm-cube 
-                (at :host "qs-app-01.rally.prod") 
-                (at :measure "javaRequestSpan.heapAllocated"))))
-
-
-(comment
-
-(defn foo [& args]
-  (let [aps (partition-all 2 args)
-        [opts-and-vals ps] (split-with #(keyword? (first %)) aps)
-        options (into {} (map vec opts-and-vals))
-        positionals (reduce into [] ps)]
-    [options positionals]))
-
+  (println (read-value alm-cube 
+                       (at :host "qs-app-01.rally.prod") 
+                       (at :measure "javaRequestSpan.heapAllocated")))
 )
-
-
