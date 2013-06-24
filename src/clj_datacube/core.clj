@@ -124,12 +124,12 @@
 
 (def year-bucket HourDayMonthBucketer/years)
 (def month-bucket HourDayMonthBucketer/months)
-(def day-bucket HourDayMonthBucketer/days)
 (def week-bucker HourDayMonthBucketer/weeks)
+(def day-bucket HourDayMonthBucketer/days)
 (def hour-bucket HourDayMonthBucketer/hours)
 
 (defn int-dimension 
-  "Create a dimension for by Integers"
+  "Create a dimension for Integers"
   [cube key] (dimension cube key (Dimension. (name key) (BigEndianIntBucketer.) false 4)))
 
 (defn long-dimension 
@@ -178,12 +178,28 @@
 ;; Cube Creation DSL
 ;; 
 (defn dimension 
+  "Pass a dimension to the cube. Use this function when creating
+   dimensions that are not included in the pacage, or you have a 
+   custom Bucketer.
+
+   Designed for use within defcube.
+
+  Arguments: 
+     - a keyword to refer to the dimension in future calls.
+     - an instance of com.urbanairship.datacube.Dimension."
   [cube key dim]
   (-> cube 
       (assoc-in [:dimensions key] dim)
       (assoc :dimension-list  (conj (get cube :dimension-list []) key))))
 
 (defn rollup 
+  "Define a rollup for this cube. A rollup is a combination of
+   zero or more dimensions and buckets for which a value will be
+   tracked.
+
+   A rollup take a list of keywords that refer to dimensions already
+   added to the cube. Each dimension reference may be followed by 
+   an optional BucketType reference."
   ([cube & spec] 
      (let [r (Rollup. (parse-rollup-spec cube spec))] 
        (assoc cube :rollups (conj (:rollups cube) r))))

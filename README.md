@@ -44,10 +44,8 @@ Cubes are declared using the defcube macro. A cube has a type (Intger, Long or D
 
 ``` clj
   (defcube my-cube :long 
-    
     (string-dimension :name)
     (time-dimension :time)
-
     (rollup)
     (rollup :name)
     (rollup :name :time day-bucket))
@@ -57,6 +55,42 @@ Cubes are declared using the defcube macro. A cube has a type (Intger, Long or D
   (write-value my-cube 100 (at :name "name"))
   (write-value my-cube 105 (at :name "name2") (at :time day-bucket (time/date-time 2013 06 02)))
 ```
+
+### Built-in dimensions (and their Bucketers)
+
+clj-datacube wrapps all the included Bucketers into a convient syntax for commonly used scenarios. The follwing Bucketers are supported through these functions:
+
+ - `(string-dimension)` - StringToBytesBucketer
+ - `(time-dimension)` - HourDayMonthBucketer. Buckets are provided as `year-bucket` `month-bucket` `day-bucket` `week-bucket` `hour-bucket`
+ - `(int-dimension)` - BigEndianIntBucketer
+ - `(long-dimension)` - BigEndianLongBucketer
+ - `(boolean-dimension)` - BooleanBucketer
+ - `(tags-dimension)` - Tags Bucketer
+ 
+ Custom bucketers may be reify'ed and passed to the cube using the `(dimension)` function.
+ 
+### Rollups
+
+Rollups are how the cube decides which combination of Dimensions (and buckets) to track values for. You use the `(rollup)` function and pass in a list of dimension keywords and optionally a BucketType for each dimension.
+
+### Reading and Writing
+
+Use the `(write-value)` function to insert values to the cube. `read-value` takes a cube, and value to be applied and a list of coodinates, constructed with the `at` function. For example, to write a value for a user at a particular time you may say:
+
+```clj
+ (defcube cube ....)
+ (write-value cube 10000 (at :user "bob") (:at :time hour-bucket (t/now)))
+```
+
+The rollups will automatically place the value in the correct location based on any bucket types that you pass to write-value.
+
+Use the `(read-value)` function to extract values from the cube. The call is similar to write-value:
+
+```clj
+  (read-value cube (:at user "bob") (:at :time hour-bucket (t/now)))
+```
+
+The buckets used in the definition of the rollups must match those used for `(read-value)`
 
 ## Complete Example
 
