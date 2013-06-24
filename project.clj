@@ -11,6 +11,9 @@
                  [org.apache.hadoop/hadoop-hdfs                          "2.0.0-cdh4.2.0"]
                  [org.apache.hbase/hbase                                 "0.94.2-cdh4.2.0"]
                  [org.clojure/tools.logging                              "0.2.3"]
+
+                 [org.clojure/data.csv "0.1.2"]
+
 ]
   :profiles {:dev
              {:dependencies [[midje               "1.5.1"]

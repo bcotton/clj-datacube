@@ -40,23 +40,70 @@ Bug reports and pull requests at [the official clj-datacube repo on Github](http
 
 ### Defining a cube
 
-``` clj
-  (defcube my-cube :long (map-db-harness long-deserializer) 10 1000 full-sync-level
+Cubes are declared using the defcube macro. A cube has a type (Intger, Long or Double) and a collection of dimensions. Rollups are declared to be some aspect of a combination of dimensions that needs to be counted.
 
-    (dimension :name (string-dimension "name"))
-    (dimension :measure (string-dimension "measure"))
-    (dimension :time (time-dimension "time" 8))
+``` clj
+  (defcube my-cube :long 
+    
+    (string-dimension :name)
+    (time-dimension :time)
 
     (rollup)
     (rollup :name)
-    (rollup :name :time day-bucket)
-    (rollup :name :measure))
+    (rollup :name :time day-bucket))
 
   (write-value my-cube 102)
   (write-value my-cube 100 (at :name "name"))
   (write-value my-cube 100 (at :name "name"))
-  (write-value my-cube 104 (at :name "other name") (at :measure "testing"))
-  (write-value my-cube 105 (at :name "name2") (at :time (time/date-time 2013 06 02)))
+  (write-value my-cube 105 (at :name "name2") (at :time day-bucket (time/date-time 2013 06 02)))
+```
+
+## Complete Example
+
+```clj
+  (defcube tweets-cube :long
+    (time-dimension :time)
+    (string-dimension :retweeted-from)
+    (string-dimension :user)
+    (tags-dimension :tags)
+    (rollup)
+    (rollup :user)
+    (rollup :user :time day-bucket)
+    (rollup :retweeted-from)
+    (rollup :user :retweeted-from)
+    (rollup :tags)
+    (rollup :tags :time hour-bucket))
+
+
+  (with-open [in-file (io/reader "dev-resources/tweets_25bahman.csv")]
+    (doseq [line (line-seq in-file)]
+      (let [tweet (parse-tweet line)]
+
+        (write-value tweets-cube 1
+                          (at :time (:time tweet))
+                          (at :user (:username tweet))
+                          (at :retweeted-from (or (:rt-from tweet) ""))
+                          (at :tags (:hash-tags tweet))))))
+
+  (println "Total tweets: " 
+           (read-value tweets-cube))
+  (println "Tweets by baraneshgh: "
+           (read-value tweets-cube 
+                            (at :user "baraneshgh")))
+  (println "Tweets retweeting IranTube: "
+           (read-value tweets-cube 
+                            (at :retweeted-from "IranTube")))
+  (println "Retweets of omidhabibinia by DominiqueRdr: " 
+           (read-value tweets-cube 
+                            (at :retweeted-from "omidhabibinia")
+                            (at :user "DominiqueRdr")))
+  (println "Uses of hashtag #iran: " 
+           (read-value tweets-cube (at :tags "iran")))
+  (println "Uses of hashtag #iran during 2011-02-10T15:00Z: "
+           (read-value tweets-cube 
+                            (at :tags "iran") 
+                            (at :time hour-bucket (t/date-time 2011, 2, 10, 15, 0, 0, 0))))
+
 ```
   
 

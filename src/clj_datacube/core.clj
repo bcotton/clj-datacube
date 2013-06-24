@@ -1,20 +1,22 @@
 (ns clj-datacube.core
   (:import [java.util.concurrent ConcurrentHashMap]
            [com.urbanairship.datacube Dimension DimensionAndBucketType BucketType Rollup DataCube DataCubeIo SyncLevel DbHarness DbHarness$CommitType WriteBuilder ReadBuilder]
-           [com.urbanairship.datacube.bucketers StringToBytesBucketer HourDayMonthBucketer BigEndianIntBucketer BigEndianLongBucketer BooleanBucketer MinutePeriodBucketer SecondPeriodBucketer]
+           [com.urbanairship.datacube.bucketers StringToBytesBucketer HourDayMonthBucketer BigEndianIntBucketer BigEndianLongBucketer BooleanBucketer TagsBucketer MinutePeriodBucketer SecondPeriodBucketer]
            [com.urbanairship.datacube.idservices HBaseIdService MapIdService CachingIdService]
            [com.urbanairship.datacube.dbharnesses MapDbHarness HBaseDbHarness]
            [com.urbanairship.datacube.ops LongOp IntOp DoubleOp]
            [org.apache.hadoop.hbase HBaseConfiguration]
            [org.apache.hadoop.hbase.client HTablePool])
-  (:require [clj-time.core :as time]
+  (:require [clj-time.core  :as time]
             [clojure.pprint :as pprint])
   (:use [clojure.string :only [join]])
   (:gen-class))
 
 (declare dimension)
 
-(def read-combine-cas DbHarness$CommitType/READ_COMBINE_CAS)
+(def read-combine-cas-commit-type DbHarness$CommitType/READ_COMBINE_CAS)
+(def increment-commit-type DbHarness$CommitType/INCREMENT)
+(def overwirte-commit-type DbHarness$CommitType/OVERWRITE)
 
 (def full-sync-level  SyncLevel/FULL_SYNC)
 (def batch-sync-level SyncLevel/BATCH_SYNC)
@@ -26,51 +28,88 @@
 (def deserializers {:long long-deserializer :int int-deserializer :double double-deserializer})
 
 (defn map-id-service 
+  "Create an in-memory Map-backed IdService. Useful for testing.
+   By default will cache up to 10 items."
   ([]
      (map-id-service "cache" 10))
   ([name size] 
      (CachingIdService. size (MapIdService.) name)))
 
 (defn map-db-harness 
+  "Create an in-memory Map-backed DbHarness. Useful for testing.
+   By default will use a read-combine-cas commit type."
   ([commit-type deserializer]
      (MapDbHarness. (ConcurrentHashMap.) 
                     deserializer commit-type (map-id-service)))
   ([deserializer]
-     (map-db-harness read-combine-cas deserializer)))
+     (map-db-harness read-combine-cas-commit-type deserializer)))
 
-(defn hbase-configuration [zookeeper-connect]
+(defn hbase-configuration
+  "Create an BHaseCOnfiguration with one value, the location of the zokeeper quorum."
+  [zookeeper-connect]
   (doto (HBaseConfiguration/create) 
     (.set "hbase.zookeeper.quorum" zookeeper-connect)))
 
-(defn hbase-id-service [zookeeper-connect]
+(defn hbase-id-service
+  "Create a HBase backed IdService.
+
+  Optional Parameters:
+    :lookup-table s  - The name of the lookup table. Defaults to 'idlookup'
+    :counter-table s - The name of the counter table. Defaults to 'idcounter'
+    :cf s            - The name of the column family. Defaults to 'c'
+    :cube-name c     - A uniqe cube name for the cube being used. Defaults to 'cube'
+"
+  [zookeeper-connect & { :keys [lookup-table counter-table cf cube-name]
+                        :or {lookup-table "idlookup" counter-table "idcounter" cf "c" cube-name "cube"}}]
   (CachingIdService. 500 (HBaseIdService.
                            (hbase-configuration zookeeper-connect)
-                           (.getBytes "idlookup")
-                           (.getBytes "idcounter")
-                           (.getBytes "c")
-                           (.getBytes "spans"))
+                           (.getBytes lookup-table)
+                           (.getBytes counter-table)
+                           (.getBytes cf)
+                           (.getBytes cube-name))
                      "cache"))
 
 (defn hbase-db-harness 
-  ([commit-type deserializer zookeeper-connect]
-     (println "Creating HBase DB Harness")
+  ([commit-type deserializer zookeeper-connect id-service & {:keys [htable-pool-size
+                                                                    cube-name 
+                                                                    table-name 
+                                                                    cf 
+                                                                    flush-threads-count
+                                                                    ioe-retry-count
+                                                                    cas-retry-count
+                                                                    metric-scope]
+                                                             :or {htable-pool-size 10
+                                                                  cube-name "cube"
+                                                                  table-name "datacube"
+                                                                  cf "c"
+                                                                  flush-threads-count 5
+                                                                  ioe-retry-count 5
+                                                                  cas-retry-count 5
+                                                                  metric-scope nil}}]
      (HBaseDbHarness. 
-      (HTablePool. (hbase-configuration zookeeper-connect) 10) 
-      (.getBytes "spans")
-      (.getBytes "spans") 
-      (.getBytes "spans") 
+      (HTablePool. (hbase-configuration zookeeper-connect) htable-pool-size) 
+      (.getBytes cube-name)
+      (.getBytes table-name) 
+      (.getBytes cf) 
       deserializer 
-      (hbase-id-service zookeeper-connect) 
-      commit-type))
+      id-service
+      commit-type
+      flush-threads-count
+      ioe-retry-count
+      cas-retry-count
+      metric-scope))
+  ([commit-type deserializer zookeeper-connect]
+     (hbase-db-harness commit-type deserializer zookeeper-connect (hbase-id-service zookeeper-connect)))
   ([deserializer zookeeper-connect]
-     (hbase-db-harness read-combine-cas deserializer zookeeper-connect)))
+     (hbase-db-harness read-combine-cas-commit-type deserializer zookeeper-connect)))
 
 
 ;;
 ;; Dimensions
 ;;
 (defn string-dimension
-  "Create a dimension suitable for storing String values."
+  "Create a dimension suitable for storing String values.
+   Default to using 5 bytes to store all mapped values of this dimension."
   ([cube key]
      (string-dimension cube key 5))
   ([cube key size]
@@ -100,6 +139,14 @@
 (defn boolean-dimension
   "Create a dimension for Booleans"
   [cube key] (dimension cube key (Dimension. (name key) (BooleanBucketer.) false 1)))
+
+(defn tags-dimension
+  "Create a dimension suitable for storing String tag values.
+   Default to using 5 bytes to store all mapped values of this dimension."
+  ([cube key]
+     (tags-dimension cube key 5))
+  ([cube key size]
+     (dimension cube key (Dimension. (name key) (TagsBucketer.) true size))))
 
 ;; 
 (defn- make-dim-and-bucket 
@@ -174,14 +221,14 @@
 (defmethod unwrap-value :double [cube value] (.getDouble (.get value)))
 
 (defn- get-io [cube  builder]
-  (let [value (.get (:cubeio cube) builder)
-        measure-type (:measure-type cube)]
-      (if (.isPresent value)
-        (unwrap-value cube value)
-        0)))
+  (let [value (.get (:cubeio cube) builder)]
+    (if (.isPresent value)
+      (unwrap-value cube value)
+      0)))
 
 (defn at
-  "Sugar for wrapping dimension and buckets."
+  "Sugar for wrapping dimension and buckets.
+  Pass a Dimension and the value, or a Dimsnion, the bucket-type and the value."
   ([dim coordinate] (at dim BucketType/IDENTITY coordinate))
   ([dim ^BucketType bucket-type coordinate] (vector dim bucket-type coordinate)))
 
@@ -203,40 +250,31 @@
     [options body]))
 
 (defmacro defcube
+  "Define a DataCube with a set of dimensions and rollups.
+  Cubes read and write values of a particular type. Supported types are
+  :long, :int and :double.
+
+  Cubes must have at least one rollup, which will accululate all the values.
+
+  Example of a minimal cibe
+    (defcube cube :long (rollup))
+"
   [cube-name measure-type & options-and-body]
   (let [[options body] (extract-options options-and-body)
         db-harness     (or (:db-harness options) 
                            `(map-db-harness (~measure-type deserializers)))
         batch-size     (get options :batch-size 0)
         flush-interval (get options :flush-interval 1000)
-        sync-level     (get options :sync-level 'full-sync-level)]
+        sync-level     (get options :sync-level 'clj-datacube.core/full-sync-level)]
     `(let [cube# (-> {}
-                    ~@body)
-          data-cube# (DataCube. (for [dim# (:dimension-list cube#)] ;; Dimensions are ordered
-                                  (dim# (:dimensions cube#)))
-                                (:rollups cube#))
-          cubeio# (DataCubeIo. data-cube# ~db-harness ~batch-size ~flush-interval ~sync-level)
-          cube# (-> cube#
-                    (assoc :cube data-cube#)
-                    (assoc :cubeio cubeio#)
-                    (assoc :sync-level ~sync-level)
-                    (assoc :measure-type ~measure-type))]
-      (def ~(symbol cube-name) cube#))))
-
-
-(defn -main []
-  (defcube alm-cube :long
-     :db-harness (hbase-db-harness long-deserializer "bld-hadoop-06")
-     :batch-size 10 :flush-interval 1000 :sync-level full-sync-level
-     (string-dimension :host)
-     (string-dimension :measure)
-     (dimension :five-minute (Dimension. "minute" (MinutePeriodBucketer. 5) false 8))
-     (dimension :five-second (Dimension. "second" (SecondPeriodBucketer. 5) false 8))
-     (rollup :measure :host)
-     (rollup :measure :host :five-minute)
-     (rollup :measure :host :five-second))
-   
-  (println (read-value alm-cube 
-                       (at :host "qs-app-01.rally.prod") 
-                       (at :measure "javaRequestSpan.heapAllocated")))
-)
+                     ~@body)
+           data-cube# (DataCube. (for [dim# (:dimension-list cube#)] ;; Dimensions are ordered
+                                   (dim# (:dimensions cube#)))
+                                 (:rollups cube#))
+           cubeio# (DataCubeIo. data-cube# ~db-harness ~batch-size ~flush-interval ~sync-level)
+           cube# (-> cube#
+                     (assoc :cube data-cube#)
+                     (assoc :cubeio cubeio#)
+                     (assoc :sync-level ~sync-level)
+                     (assoc :measure-type ~measure-type))]
+       (def ~(symbol cube-name) cube#))))
